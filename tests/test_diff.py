@@ -419,6 +419,45 @@ class TestConservativeMatching(DiffTestCase):
         self.assertEqual(dict(result.modified[0].fields),
                          {"room": ("R2", "R9")})
 
+    def test_same_subject_matching_finds_global_minimum(self):
+        """Matching minimizes the total changes, not each greedy step."""
+        first = timetable(monday=[
+            klass("X", "08:00", "10:00", "R0"),
+            klass("X", "08:00", "10:00", "R1"),
+            klass("X", "08:00", "10:00", "R2"),
+        ])
+        second = timetable(monday=[
+            klass("X", "08:00", "11:00", "R0"),
+            klass("X", "08:00", "12:00", "R0"),
+            klass("X", "09:00", "11:00", "R1"),
+        ])
+
+        result = diff_timetables(first, second)
+
+        self.assertEqual(len(result.modified), 3)
+        self.assertEqual(sum(len(change.fields) for change in result.modified), 5)
+
+    def test_same_subject_matching_is_independent_of_list_order(self):
+        """Reversing both lists leaves duplicate-subject pairings unchanged."""
+        old_slots = [
+            klass("X", "08:00", "10:00", "R0"),
+            klass("X", "08:00", "10:00", "R1"),
+            klass("X", "08:00", "10:00", "R2"),
+        ]
+        new_slots = [
+            klass("X", "08:00", "11:00", "R0"),
+            klass("X", "08:00", "12:00", "R0"),
+            klass("X", "09:00", "11:00", "R1"),
+        ]
+
+        forward = render(diff_timetables(
+            timetable(monday=old_slots), timetable(monday=new_slots)))
+        reversed_order = render(diff_timetables(
+            timetable(monday=list(reversed(old_slots))),
+            timetable(monday=list(reversed(new_slots)))))
+
+        self.assertEqual(forward, reversed_order)
+
 
 class TestSorting(DiffTestCase):
     """Changes are reported in weekday order, then start time order."""
