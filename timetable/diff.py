@@ -166,9 +166,24 @@ def _identity(record):
 def _group_by_identity(records):
     """Groups records by identity key, each group sorted by start time."""
     groups = OrderedDict()
-    for record in sorted(records, key=Change.sort_key):
+    for record in sorted(records, key=_matching_sort_key):
         groups.setdefault(_identity(record), []).append(record)
     return groups
+
+
+def _stable_value(value):
+    """Return a deterministic, comparable representation of a JSON value."""
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def _matching_sort_key(record):
+    """Sort matching candidates independently of their input list position."""
+    day_index = WEEKDAYS.index(record.day) if record.day in WEEKDAYS else len(WEEKDAYS)
+    return (
+        day_index,
+        _stable_value(record.day),
+        *(_stable_value(record.fields.get(field)) for field in FIELDS),
+    )
 
 
 def _is_modified(before, after):
@@ -195,27 +210,100 @@ def _difference_count(before, after):
 
 
 def _pair_by_identity(olds, news):
-    """Zips two same-key groups so each pair differs in as few fields as possible.
+    """Pairs two same-key groups with the minimum total field differences.
 
-    Both sides are already sorted by start time. An exact match (no field
-    differs) is always preferred; remaining records are paired in sorted
-    order. Returns ``(pairs, leftover_old, leftover_new)`` so callers can
-    still report the records that had no counterpart.
+    This is a rectangular assignment problem: every record on the smaller
+    side is paired exactly once, while unmatched records on the larger side
+    remain additions or removals.  The Hungarian algorithm finds the global
+    minimum instead of committing to locally cheapest pairs.  Both sides are
+    sorted by ``_matching_sort_key`` first, which makes equally optimal
+    assignments deterministic and independent of JSON list order.
+
+    Returns ``(pairs, leftover_old, leftover_new)`` so callers can still
+    report records that had no counterpart.
     """
-    remaining_old = list(olds)
-    remaining_new = list(news)
-    pairs = []
+    ordered_old = sorted(olds, key=_matching_sort_key)
+    ordered_new = sorted(news, key=_matching_sort_key)
 
-    while remaining_old and remaining_new:
-        best = min(
-            ((i, j, _difference_count(o, n))
-             for i, o in enumerate(remaining_old)
-             for j, n in enumerate(remaining_new)),
-            key=lambda item: (item[2], item[0], item[1]),
-        )
-        i, j, _count = best
-        pairs.append((remaining_old.pop(i), remaining_new.pop(j)))
-    return pairs, remaining_old, remaining_new
+    if not ordered_old or not ordered_new:
+        return [], ordered_old, ordered_new
+
+    transposed = len(ordered_old) > len(ordered_new)
+    left, right = ((ordered_new, ordered_old) if transposed
+                   else (ordered_old, ordered_new))
+
+    # Hungarian algorithm for a rectangular matrix with rows <= columns.
+    row_count = len(left)
+    column_count = len(right)
+    row_potential = [0] * (row_count + 1)
+    column_potential = [0] * (column_count + 1)
+    matched_row = [0] * (column_count + 1)
+    previous_column = [0] * (column_count + 1)
+
+    for row in range(1, row_count + 1):
+        matched_row[0] = row
+        column = 0
+        minimum = [float("inf")] * (column_count + 1)
+        used = [False] * (column_count + 1)
+
+        while True:
+            used[column] = True
+            current_row = matched_row[column]
+            delta = float("inf")
+            next_column = 0
+
+            for candidate in range(1, column_count + 1):
+                if used[candidate]:
+                    continue
+                cost = _difference_count(
+                    left[current_row - 1], right[candidate - 1]
+                )
+                reduced_cost = (
+                    cost - row_potential[current_row]
+                    - column_potential[candidate]
+                )
+                if reduced_cost < minimum[candidate]:
+                    minimum[candidate] = reduced_cost
+                    previous_column[candidate] = column
+                if (minimum[candidate], candidate) < (delta, next_column):
+                    delta = minimum[candidate]
+                    next_column = candidate
+
+            for candidate in range(column_count + 1):
+                if used[candidate]:
+                    row_potential[matched_row[candidate]] += delta
+                    column_potential[candidate] -= delta
+                else:
+                    minimum[candidate] -= delta
+            column = next_column
+            if matched_row[column] == 0:
+                break
+
+        while True:
+            previous = previous_column[column]
+            matched_row[column] = matched_row[previous]
+            column = previous
+            if column == 0:
+                break
+
+    assignments = sorted(
+        (row - 1, column - 1)
+        for column, row in enumerate(matched_row[1:], start=1)
+        if row != 0
+    )
+
+    if transposed:
+        pair_indexes = [(column, row) for row, column in assignments]
+    else:
+        pair_indexes = assignments
+    pair_indexes.sort()
+
+    pairs = [(ordered_old[i], ordered_new[j]) for i, j in pair_indexes]
+    used_old = {i for i, _ in pair_indexes}
+    used_new = {j for _, j in pair_indexes}
+    leftover_old = [record for i, record in enumerate(ordered_old) if i not in used_old]
+    leftover_new = [record for j, record in enumerate(ordered_new) if j not in used_new]
+    return pairs, leftover_old, leftover_new
 
 
 def match_modified(removed, added):
