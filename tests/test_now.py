@@ -55,6 +55,11 @@ class TestNowHelpers(unittest.TestCase):
         self.assertEqual(minutes_until(MONDAY.time(), datetime(2024, 1, 1, 9, 30).time()), 30)
         self.assertEqual(minutes_until(MONDAY.time(), MONDAY.time()), 0)
 
+    def test_minutes_until_wraps_past_midnight(self):
+        current = datetime(2024, 1, 1, 23, 30).time()
+        target = datetime(2024, 1, 2, 1, 0).time()
+        self.assertEqual(minutes_until(current, target), 90)
+
 
 class TestNowBoundaries(unittest.TestCase):
     """Boundary behaviour of active_class / next_class against Monday's slots."""
@@ -157,6 +162,39 @@ class TestNowRendering(unittest.TestCase):
         self.assertIn("No classes scheduled today.", text)
         self.assertNotIn("🟢 Current class", text)
         self.assertNotIn("➡️ Next class", text)
+
+    def test_overnight_class_is_current_before_midnight(self):
+        data = {"friday": [
+            {"subject": "Night", "start": "23:00", "end": "01:00", "room": "Lab"},
+        ]}
+        text = render_at(data, datetime(2024, 1, 5, 23, 30))
+        self.assertIn("🟢 Current class", text)
+        self.assertIn("Night", text)
+        self.assertIn("90 minutes remaining", text)
+
+    def test_overnight_class_continues_on_next_day(self):
+        data = {
+            "friday": [
+                {"subject": "Night", "start": "23:00", "end": "01:00", "room": "Lab"},
+            ],
+            "saturday": [],
+        }
+        text = render_at(data, datetime(2024, 1, 6, 0, 30))
+        self.assertIn("📅 Today: Saturday", text)
+        self.assertIn("🟢 Current class", text)
+        self.assertIn("Night", text)
+        self.assertIn("30 minutes remaining", text)
+
+    def test_sunday_overnight_class_continues_on_monday(self):
+        data = {
+            "sunday": [
+                {"subject": "Night", "start": "23:00", "end": "01:00", "room": "Lab"},
+            ],
+            "monday": [],
+        }
+        text = render_at(data, datetime(2024, 1, 8, 0, 30))
+        self.assertIn("🟢 Current class", text)
+        self.assertIn("Night", text)
 
 
 if __name__ == "__main__":

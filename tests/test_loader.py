@@ -40,6 +40,9 @@ class TestTimetableLoader(unittest.TestCase):
         # 09:00 to 10:30 is 90 minutes
         self.assertEqual(calc_duration("09:00", "10:30"), 90)
 
+    def test_calc_duration_overnight(self):
+        self.assertEqual(calc_duration("23:00", "01:00"), 120)
+
 
 if __name__ == "__main__":
     unittest.main()
