@@ -4,7 +4,7 @@ All clock access is isolated behind the optional ``now`` argument so that
 tests can supply a fixed datetime instead of relying on the system clock.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from timetable.display import WEEKDAYS, parse_time
 
@@ -29,9 +29,14 @@ _MIN_DATE = datetime(2000, 1, 1).date()
 def minutes_until(current_time, target_time):
     """Returns whole minutes from ``current_time`` to ``target_time``.
 
-    Both arguments are datetime.time values on the same day.
+    Both arguments are datetime.time values.  A target earlier on the clock
+    is interpreted as occurring on the following day.
     """
-    delta = datetime.combine(_MIN_DATE, target_time) - datetime.combine(_MIN_DATE, current_time)
+    current = datetime.combine(_MIN_DATE, current_time)
+    target = datetime.combine(_MIN_DATE, target_time)
+    if target < current:
+        target += timedelta(days=1)
+    delta = target - current
     return int(delta.total_seconds() // 60)
 
 
@@ -47,7 +52,28 @@ def active_class(slots, current_time):
             end = parse_time(slot.get("end", ""))
         except ValueError:
             continue
-        if start <= current_time < end:
+        if end < start:
+            # On the weekday where an overnight class begins, only the part
+            # from its start through midnight belongs to today's slots.  The
+            # after-midnight continuation is handled from the previous day by
+            # ``render_now``.
+            is_active = current_time >= start
+        else:
+            is_active = start <= current_time < end
+        if is_active:
+            return slot
+    return None
+
+
+def _continuing_class(slots, current_time):
+    """Return a previous-day overnight class still active after midnight."""
+    for slot in slots:
+        try:
+            start = parse_time(slot.get("start", ""))
+            end = parse_time(slot.get("end", ""))
+        except ValueError:
+            continue
+        if end < start and current_time < end:
             return slot
     return None
 
@@ -84,12 +110,16 @@ def render_now(data, now=None):
     print(f"\n📅 Today: {day.capitalize()}")
 
     slots = data.get(day, [])
-    if not slots:
-        print("No classes scheduled today.")
-        return
+    previous_day = WEEKDAYS[(now.weekday() - 1) % len(WEEKDAYS)]
 
     current = active_class(slots, current_time)
+    if current is None:
+        current = _continuing_class(data.get(previous_day, []), current_time)
     upcoming = next_class(slots, current_time)
+
+    if not slots and current is None:
+        print("No classes scheduled today.")
+        return
 
     if current is not None:
         remaining = minutes_until(current_time, parse_time(current.get("end", "00:00")))

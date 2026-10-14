@@ -127,6 +127,25 @@ class TestMergeLogic(MergeTestCase):
         merged, conflicts = merge_timetables(t1, t2)
         self.assertEqual(len(conflicts), 2)
 
+    def test_detect_overnight_and_late_evening_conflict(self):
+        t1 = empty_timetable()
+        t1["friday"] = [make_slot("Night", "23:00", "01:00", "R101")]
+        t2 = empty_timetable()
+        t2["friday"] = [make_slot("Late", "23:30", "23:45", "R102")]
+
+        _, conflicts = merge_timetables(t1, t2)
+        self.assertEqual(len(conflicts), 1)
+        self.assertEqual(conflicts[0][0], "friday")
+
+    def test_detect_two_overlapping_overnight_classes(self):
+        t1 = empty_timetable()
+        t1["friday"] = [make_slot("Night A", "22:00", "02:00", "R101")]
+        t2 = empty_timetable()
+        t2["friday"] = [make_slot("Night B", "23:00", "01:00", "R102")]
+
+        _, conflicts = merge_timetables(t1, t2)
+        self.assertEqual(len(conflicts), 1)
+
     def test_conflicts_involving_classes_with_different_subjects(self):
         t1 = empty_timetable()
         t1["monday"] = [make_slot("Math", "09:00", "11:00", "R101")]

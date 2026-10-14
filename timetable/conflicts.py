@@ -3,6 +3,10 @@
 from timetable.display import WEEKDAYS, parse_time
 
 
+MINUTES_PER_DAY = 24 * 60
+MINUTES_PER_WEEK = 7 * MINUTES_PER_DAY
+
+
 def _to_minutes(time_str):
     """Converts a 'HH:MM' string to total minutes since midnight."""
     t = parse_time(time_str)
@@ -23,7 +27,42 @@ def do_overlap(slot_a, slot_b):
     except (ValueError, TypeError, AttributeError):
         return False
 
+    # An end earlier than its start belongs to the following day.  Put both
+    # slots on the same linear timeline before applying the usual half-open
+    # interval test.
+    if end_a < start_a:
+        end_a += MINUTES_PER_DAY
+    if end_b < start_b:
+        end_b += MINUTES_PER_DAY
+
     return max(start_a, start_b) < min(end_a, end_b)
+
+
+def _weekly_interval(day_index, slot):
+    """Return a slot as absolute minutes in a reference week."""
+    start = _to_minutes(slot.get("start", ""))
+    end = _to_minutes(slot.get("end", ""))
+    absolute_start = day_index * MINUTES_PER_DAY + start
+    absolute_end = day_index * MINUTES_PER_DAY + end
+    if end < start:
+        absolute_end += MINUTES_PER_DAY
+    return absolute_start, absolute_end
+
+
+def _weekly_overlap(interval_a, interval_b):
+    """Return whether two weekly intervals overlap, including week wrap."""
+    start_a, end_a = interval_a
+    start_b, end_b = interval_b
+
+    # Sunday overnight events extend into the next reference week.  Comparing
+    # the second interval one week backward and forward makes the calculation
+    # circular without changing ordinary weekday behaviour.
+    for offset in (-MINUTES_PER_WEEK, 0, MINUTES_PER_WEEK):
+        shifted_start = start_b + offset
+        shifted_end = end_b + offset
+        if max(start_a, shifted_start) < min(end_a, shifted_end):
+            return True
+    return False
 
 
 def find_conflicts(data):
@@ -44,26 +83,37 @@ def find_conflicts(data):
             if isinstance(k, str) and isinstance(v, list):
                 normalized_data[k.lower()] = v
 
-    for day in WEEKDAYS:
-        slots = normalized_data.get(day, [])
-        if not slots or len(slots) < 2:
-            continue
+    events = []
+    for day_index, day in enumerate(WEEKDAYS):
+        for slot in normalized_data.get(day, []):
+            try:
+                interval = _weekly_interval(day_index, slot)
+            except (ValueError, TypeError, AttributeError):
+                continue
+            events.append((interval[0], day_index, day, slot, interval))
 
-        # Sort slots by start time
-        sorted_slots = sorted(
-            slots,
-            key=lambda s: _to_minutes(s.get("start", "00:00"))
-            if s.get("start")
-            else 0,
-        )
+    events.sort(key=lambda event: (event[0], event[1]))
 
-        n = len(sorted_slots)
-        for i in range(n):
-            for j in range(i + 1, n):
-                slot_a = sorted_slots[i]
-                slot_b = sorted_slots[j]
-                if do_overlap(slot_a, slot_b):
-                    conflicts.append((day.lower(), slot_a, slot_b))
+    for index, event_a in enumerate(events):
+        _, day_index_a, day_a, slot_a, interval_a = event_a
+        for event_b in events[index + 1:]:
+            _, day_index_b, day_b, slot_b, interval_b = event_b
+            if not _weekly_overlap(interval_a, interval_b):
+                continue
+
+            # For a cross-day collision, report the weekday on which the
+            # overnight class starts.  Same-day conflicts retain the existing
+            # label and ordering.
+            if day_a != day_b and interval_a[1] > (day_index_a + 1) * MINUTES_PER_DAY:
+                conflict_day = day_a
+                first_slot, second_slot = slot_a, slot_b
+            elif day_a != day_b and interval_b[1] > (day_index_b + 1) * MINUTES_PER_DAY:
+                conflict_day = day_b
+                first_slot, second_slot = slot_b, slot_a
+            else:
+                conflict_day = day_a
+                first_slot, second_slot = slot_a, slot_b
+            conflicts.append((conflict_day, first_slot, second_slot))
 
     return conflicts
 
